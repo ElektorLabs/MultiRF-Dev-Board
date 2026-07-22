@@ -1,6 +1,7 @@
 /*
-  01 – Basic Transmitter
-  Sends a numbered string every second and prints the result.
+  01 – Basic Transmitter  (non-blocking)
+  Sends a numbered string every TX_INTERVAL ms using a millis() timer.
+  The MCU is free to do other work between transmissions.
 
   Wiring (same for all examples):
     Arduino Uno/Nano  CS=10  GDO0=2   (SPI: SCK=13 MISO=12 MOSI=11)
@@ -11,20 +12,27 @@
 #include <cc1101ext.h>
 using namespace CC1101;
 
-// --- Pin Configuration ---
-#define PIN_CS  5   // change to 53 for Mega, 5 for ESP32
-#define PIN_GD0  4   // change to 4 for ESP32
+#define PIN_CS   2
+#define PIN_GD0   1
+
+#define CHANNEL      12
+#define BASE_FREQ  433.92f   // MHz
+
+#define TX_INTERVAL  3000    // ms between transmissions
 
 #ifdef ESP32
-RadioExt radio(PIN_CS, /*clk*/18, /*miso*/19, /*mosi*/23, PIN_GD0);
+RadioExt radio(PIN_CS, /*clk*/7, /*miso*/8, /*mosi*/9, PIN_GD0);
 #else
 RadioExt radio(PIN_CS, PIN_GD0);
 #endif
 
+static uint8_t  counter = 0;
+static uint32_t lastTx  = 0;
+
 void setup() {
   Serial.begin(115200);
 
-  while (radio.begin(MOD_2FSK, 433.92, 4.8) != STATUS_OK) {
+  while (radio.begin(MOD_2FSK, BASE_FREQ, 4.8) != STATUS_OK) {
     Serial.println(F("CC1101 not found – check wiring"));
     delay(1000);
   }
@@ -32,20 +40,26 @@ void setup() {
   radio.setPacketLengthMode(PKT_LEN_MODE_VARIABLE);
   radio.setSyncMode(SYNC_MODE_16_16);
   radio.setCrc(true);
+  radio.setChannel(CHANNEL);
 
-  Serial.println(F("CC1101 ready — Transmitter"));
+  Serial.print(F("CC1101 ready — Transmitter | ch"));
+  Serial.print(CHANNEL); Serial.print(F("  "));
+  Serial.print(BASE_FREQ + CHANNEL * 0.200f, 2); Serial.println(F(" MHz"));
 }
 
-static uint8_t counter = 0;
-
 void loop() {
-  char msg[32];
-  snprintf(msg, sizeof(msg), "Hello #%u", counter++);
+  /* ---- Transmit on interval ---- */
+  if (millis() - lastTx >= TX_INTERVAL) {
+    lastTx = millis();
 
-  Status s = radio.transmit((uint8_t *)msg, strlen(msg));
+    char msg[32];
+    snprintf(msg, sizeof(msg), "Hello #%u", counter++);
+    Status s = radio.transmit((uint8_t *)msg, strlen(msg));
 
-  Serial.print(F("TX: ")); Serial.print(msg);
-  Serial.println(s == STATUS_OK ? F(" [OK]") : F(" [FAIL]"));
+    Serial.print(F("TX ch")); Serial.print(CHANNEL);
+    Serial.print(F(": ")); Serial.print(msg);
+    Serial.println(s == STATUS_OK ? F("  [OK]") : F("  [FAIL]"));
+  }
 
-  delay(1000);
+  /* ---- Other tasks can go here ---- */
 }

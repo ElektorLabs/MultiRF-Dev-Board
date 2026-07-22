@@ -1,17 +1,11 @@
 /*
-  06 – Low-Power Receiver
-  Uses interrupt-driven (GDO0) packet detection so the MCU does not spin in a
-  tight polling loop.  The MCU can execute other tasks or enter a light sleep
-  between interrupts; only the CC1101 stays active in RX mode.
+  06 – Low-Power Receiver  (non-blocking, interrupt-driven)
+  GDO0 fires when a packet arrives; the ISR sets a flag.
+  Between packets the MCU loop() returns immediately — no spinning, no delay().
+  Add MCU light-sleep in the "MCU free" section for maximum power saving.
 
-  GDO0 is configured by receiveCallback() to assert when the RX FIFO has data.
-  The ISR sets a flag; the main loop reads and prints the packet.
-
-  PIN_GD0 must be connected to a hardware-interrupt-capable pin:
-    Arduino Uno/Nano  pin 2 or 3
-    Arduino Mega      pin 2, 3, 18, 19, 20, 21
-    ESP32             any GPIO
-
+  GDO0 must be on an interrupt-capable pin (Uno/Nano: 2 or 3).
+  CHANNEL must match the transmitter.
   See 01_BasicRxTx/Transmitter for full wiring notes.
 */
 
@@ -19,7 +13,10 @@
 using namespace CC1101;
 
 #define PIN_CS   10
-#define PIN_GD0   2    /* interrupt-capable pin */
+#define PIN_GD0   2
+
+#define CHANNEL      0
+#define BASE_FREQ  433.92f
 
 #ifdef ESP32
 RadioExt radio(PIN_CS, /*clk*/18, /*miso*/19, /*mosi*/23, PIN_GD0);
@@ -28,13 +25,12 @@ RadioExt radio(PIN_CS, PIN_GD0);
 #endif
 
 volatile bool pktReady = false;
-
-void onPacket() { pktReady = true; }   /* called from ISR */
+void onPacket() { pktReady = true; }   /* ISR — sets flag only */
 
 void setup() {
   Serial.begin(115200);
 
-  while (radio.begin(MOD_2FSK, 433.92, 4.8) != STATUS_OK) {
+  while (radio.begin(MOD_2FSK, BASE_FREQ, 4.8) != STATUS_OK) {
     Serial.println(F("CC1101 not found – check wiring"));
     delay(1000);
   }
@@ -42,30 +38,31 @@ void setup() {
   radio.setPacketLengthMode(PKT_LEN_MODE_VARIABLE);
   radio.setSyncMode(SYNC_MODE_16_16);
   radio.setCrc(true);
+  radio.setChannel(CHANNEL);
 
-  /* Attach interrupt — also flushes RX FIFO and enters RX mode */
-  radio.receiveCallback(onPacket);
+  radio.receiveCallback(onPacket);   /* configure GDO0, flush FIFO, enter RX */
 
-  Serial.println(F("Low-Power Receiver ready (interrupt-driven)"));
+  Serial.print(F("Low-Power RX | ch")); Serial.print(CHANNEL);
+  Serial.print(F("  ")); Serial.print(BASE_FREQ + CHANNEL * 0.200f, 2); Serial.println(F(" MHz  (interrupt-driven)"));
 }
 
 void loop() {
   if (!pktReady) {
-    /* MCU could enter light sleep here */
+    /* MCU free — add light-sleep here (e.g. set_sleep_mode(SLEEP_MODE_IDLE)) */
     return;
   }
   pktReady = false;
 
   uint8_t buf[62];
   size_t  len = 0;
-  Status  s   = radio.receive(buf, sizeof(buf) - 1, &len);
+  Status  s   = radio.readPacket(buf, sizeof(buf) - 1, &len);
 
   if (s == STATUS_OK) {
     buf[len] = '\0';
-    Serial.print(F("RX: ")); Serial.print((char *)buf);
-    Serial.print(F("  RSSI ")); Serial.print(radio.getRSSI()); Serial.println(F(" dBm"));
+    Serial.print(F("RX ch")); Serial.print(CHANNEL);
+    Serial.print(F(": ")); Serial.print((char *)buf);
+    Serial.print(F("  RSSI ")); Serial.print(radio.lastRSSI()); Serial.println(F(" dBm"));
   }
 
-  /* Re-arm interrupt for next packet */
-  radio.receiveCallback(onPacket);
+  radio.receiveCallback(onPacket);   /* re-arm interrupt + re-enter RX */
 }
